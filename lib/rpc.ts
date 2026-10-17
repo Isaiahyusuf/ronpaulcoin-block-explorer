@@ -7,6 +7,7 @@ import {
   isBlockchainInfo,
   isBlockDetails,
   isBlockSummary,
+  isLegacyNodeInfo,
   type BlockchainInfoResult,
 } from "@/lib/blockchain";
 
@@ -107,7 +108,12 @@ async function callRpc(
     return { status: "unavailable", message: configuration.message };
   }
 
-  const headers = new Headers({ "content-type": "application/json" });
+  // The legacy daemon serves RPC on one thread and holds keep-alive sockets open,
+  // which starves parallel requests; close each connection after its response.
+  const headers = new Headers({
+    "content-type": "application/json",
+    connection: "close",
+  });
   if (configuration.config.authorization) {
     headers.set("authorization", configuration.config.authorization);
   }
@@ -233,7 +239,7 @@ async function getBlockAtHeight(
     };
   }
 
-  const response = await callRpc("getblock", [hashResponse.result, 1]);
+  const response = await callRpc("getblock", [hashResponse.result, true]);
   if (response.status !== "success") {
     return { status: response.status, message: response.message };
   }
@@ -248,34 +254,53 @@ async function getBlockAtHeight(
 }
 
 export async function getBlockchainInfo(): Promise<BlockchainInfoResult> {
-  const response = await callRpc("getblockchaininfo", []);
-  if (response.status !== "success") {
-    return { status: response.status, message: response.message };
+  const [nodeResponse, hashResponse] = await Promise.all([
+    callRpc("getinfo", []),
+    callRpc("getbestblockhash", []),
+  ]);
+  if (nodeResponse.status !== "success") {
+    return { status: nodeResponse.status, message: nodeResponse.message };
   }
-  if (!isBlockchainInfo(response.result)) {
+  if (hashResponse.status !== "success") {
+    return { status: hashResponse.status, message: hashResponse.message };
+  }
+  if (
+    !isLegacyNodeInfo(nodeResponse.result) ||
+    typeof hashResponse.result !== "string" ||
+    !/^[a-fA-F0-9]{64}$/.test(hashResponse.result)
+  ) {
+    return {
+      status: "unavailable",
+      message: "The node response did not match the original Ron Paul Coin RPC format.",
+    };
+  }
+
+  const info = {
+    bestblockhash: hashResponse.result,
+    blocks: nodeResponse.result.blocks,
+    chain: nodeResponse.result.testnet ? "testnet" : "mainnet",
+    connections: nodeResponse.result.connections,
+    difficulty: nodeResponse.result.difficulty,
+    headers: null,
+  };
+  if (!isBlockchainInfo(info)) {
     return {
       status: "unavailable",
       message: "The node response did not match the expected blockchain info format.",
     };
   }
-  return { status: "online", info: response.result };
+  return { status: "online", info };
 }
 
 export async function getRecentBlocks(
   requestedStartHeight?: number,
 ): Promise<DataResult<RecentBlocks>> {
-  const chainResponse = await callRpc("getblockchaininfo", []);
-  if (chainResponse.status !== "success") {
+  const chainResponse = await getBlockchainInfo();
+  if (chainResponse.status !== "online") {
     return { status: chainResponse.status, message: chainResponse.message };
   }
-  if (!isBlockchainInfo(chainResponse.result)) {
-    return {
-      status: "unavailable",
-      message: "The node response did not match the expected blockchain info format.",
-    };
-  }
 
-  const latestHeight = chainResponse.result.blocks;
+  const latestHeight = chainResponse.info.blocks;
   if (
     requestedStartHeight !== undefined &&
     (!Number.isSafeInteger(requestedStartHeight) ||
@@ -343,7 +368,7 @@ export async function getBlockDetails(
     hash = hashResult.result;
   }
 
-  const blockResult = await callRpc("getblock", [hash, 1]);
+  const blockResult = await callRpc("getblock", [hash, true]);
   if (blockResult.status !== "success") {
     return { status: blockResult.status, message: blockResult.message };
   }

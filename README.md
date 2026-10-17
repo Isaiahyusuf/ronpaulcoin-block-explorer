@@ -1,10 +1,11 @@
 # Ron Paul Coin Explorer
 
-A responsive explorer shell for Ron Paul Coin. The overview can read genuine
-chain metadata from a server-side JSON-RPC node. It does not include demo chain
-data. Recent blocks and block details use the configured node. Transaction
-history and address history remain unavailable until their indexing
-integrations are completed.
+A responsive explorer for the original Ron Paul Coin Scrypt proof-of-work
+chain. The overview reads chain metadata from a server-side JSON-RPC node and
+recent blocks and block details use that node. The original 2014 daemon does
+not expose a header count or address index. Transaction details require its
+optional transaction index; address balances and history need a separate
+indexer. No demo chain data is included.
 
 ## Local development
 
@@ -32,16 +33,47 @@ explorer remains usable as a route and search shell.
 
 Copy `.env.example` to `.env.local` for local development and replace the
 placeholders with private daemon settings. The explorer validates the URL,
-requires both authentication fields together, makes a server-side
-`getblockchaininfo` request with a three-second timeout, and validates the
-returned chain fields before displaying them. It does not send RPC credentials
-to the browser or print them in application messages.
+requires both authentication fields together, makes server-side `getinfo` and
+`getbestblockhash` requests with a three-second timeout, and validates the
+returned fields before displaying them. It does not send RPC credentials to
+the browser or print them in application messages.
 
 Use an endpoint available only to the application or a trusted private network.
 Do not expose an authenticated coin daemon's RPC port to the public internet.
-The selected daemon must implement the Bitcoin Core-compatible
-`getblockchaininfo` JSON-RPC method and return `chain`, `blocks`, `headers`,
-`difficulty`, and `bestblockhash`.
+The original daemon uses the legacy `getinfo`, `getbestblockhash`,
+`getblockhash`, and `getblock` JSON-RPC methods. The explorer uses `getinfo`
+for height, difficulty, network, and peer count, and explicitly reports that
+the daemon does not provide a separate header count.
+
+## Original daemon parameters
+
+These values are verified against the official source tree at commit
+[`43b2763`](https://github.com/ronpaulcoin/ronpaulcoin/tree/43b27637d2bd9f6c6fddf2da994f7821f8d42303):
+
+| Setting | Mainnet | Testnet |
+| --- | --- | --- |
+| Peer-to-peer port | `9027` | `19027` |
+| JSON-RPC port | `9026` | `19026` |
+| Network message magic | `fb c0 b6 db` | `fc c1 b7 dc` |
+
+On Linux, the daemon's default data directory is `~/.ronpaulcoin/`, and its
+default config file is `~/.ronpaulcoin/ronpaulcoin.conf`. Testnet data is stored
+under the `testnet3` subdirectory. The source tree is from 2014; its Unix build
+notes list Berkeley DB 4.8, Boost, and OpenSSL. A successful build on a current
+distribution has not yet been verified.
+
+The daemon supports `-txindex` (off by default). The source requires a full
+reindex to change the setting after the database has been created. The
+transaction RPC can sometimes find transactions by scanning the block holding
+an unspent output, but that is not a dependable historical lookup strategy;
+enable and verify `-txindex` for arbitrary transaction detail pages. The
+daemon does not provide a general address index or address-history RPC.
+
+For RPC security, this source binds to loopback by default. Enabling
+`rpcallowip` changes the listener to a wildcard bind; this revision does not
+provide a per-interface RPC bind option. Do not expose the RPC port publicly.
+Use a private tunnel/network and a host firewall that only allows the explorer
+over that private path.
 
 ## Production and Railway
 
@@ -62,20 +94,19 @@ repository does not provision or sync the daemon.
 
 ## Current integration scope
 
-- **Implemented:** server-only connectivity check and validated
-  `getblockchaininfo` display on the overview; recent blocks and block detail
-  lookups via `getblockhash` and `getblock`.
+- **Implemented:** server-only connectivity check and validation of the
+  original daemon's `getinfo` and `getbestblockhash` responses; recent blocks
+  and block detail lookups via `getblockhash` and `getblock`.
 - **Not implemented:** transaction detail lookup and address balance/history.
   Those views intentionally show an unavailable state rather than guessed data.
 - **Indexer requirement:** address activity and full historical transaction
-  search generally require a Ron Paul Coin indexer or a daemon with the
-  appropriate transaction/address indexes enabled. Confirm supported RPC
-  methods, verbosity format, address encoding, and index behavior against the
-  chosen Ron Paul Coin daemon before wiring those views. Block browsing uses
-  the Bitcoin Core-compatible `getblockhash(height)` and
-  `getblock(hash, 1)` methods; the returned block must include the standard
-  hash, height, time, confirmations, version, bits, difficulty, merkle root,
-  and transaction-ID fields.
+  search require a separate address indexer; the daemon's wallet address
+  methods only cover wallet-owned addresses. Confirm supported RPC methods,
+  verbosity format, address encoding, and index behavior against the chosen
+  Ron Paul Coin daemon before wiring those views. Block browsing uses
+  `getblockhash(height)` and `getblock(hash, true)`; the returned block must
+  include the hash, height, time, confirmations, version, bits, difficulty,
+  merkle root, and transaction-ID fields.
 
 ## Branding asset
 
@@ -90,6 +121,7 @@ states that it is released under the MIT license.
 ## Checks
 
 ```bash
+npm test
 npm run lint
 npx tsc --noEmit
 npm run build

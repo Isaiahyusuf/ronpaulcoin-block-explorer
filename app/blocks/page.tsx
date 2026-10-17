@@ -136,7 +136,7 @@ export default async function BlocksPage({
       ) : (
         <UnavailableState title="Block listing is unavailable">
           {result.message} Configure a reachable Ron Paul Coin node that supports
-          getblockchaininfo, getblockhash, and getblock to browse blocks.
+          getinfo, getbestblockhash, getblockhash, and getblock to browse blocks.
         </UnavailableState>
       )}
 

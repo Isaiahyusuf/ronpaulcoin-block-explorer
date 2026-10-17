@@ -60,12 +60,12 @@ function NetworkData({
               <dd>{result.info.blocks.toLocaleString("en-US")}</dd>
             </div>
             <div className="metric">
-              <dt>Headers</dt>
-              <dd>{result.info.headers.toLocaleString("en-US")}</dd>
-            </div>
-            <div className="metric">
               <dt>Chain</dt>
               <dd className="metric-chain">{result.info.chain}</dd>
+            </div>
+            <div className="metric">
+              <dt>Connected peers</dt>
+              <dd>{result.info.connections.toLocaleString("en-US")}</dd>
             </div>
             <div className="metric">
               <dt>Difficulty</dt>
@@ -76,6 +76,9 @@ function NetworkData({
               </dd>
             </div>
           </dl>
+          <p className="table-note">
+            Header count is not exposed by the original daemon.
+          </p>
           <div className="best-block">
             <span className="best-block-label">Best block</span>
             <Link

@@ -2,8 +2,9 @@ export interface BlockchainInfo {
   bestblockhash: string;
   blocks: number;
   chain: string;
+  connections: number;
   difficulty: number;
-  headers: number;
+  headers: number | null;
 }
 
 export type BlockchainInfoResult =
@@ -29,6 +30,13 @@ export interface BlockDetails extends BlockSummary {
   merkleRoot: string;
   previousBlockHash: string | null;
   transactions: string[];
+}
+
+export interface LegacyNodeInfo {
+  blocks: number;
+  connections: number;
+  difficulty: number;
+  testnet: boolean;
 }
 
 export type DataResult<T> =
@@ -58,12 +66,25 @@ export function isBlockchainInfo(value: unknown): value is BlockchainInfo {
     typeof bestblockhash === "string" &&
     /^[a-fA-F0-9]{64}$/.test(bestblockhash) &&
     isNonNegativeSafeInteger(blocks) &&
-    isNonNegativeSafeInteger(headers) &&
+    (headers === null || isNonNegativeSafeInteger(headers)) &&
     typeof chain === "string" &&
     chain.length > 0 &&
+    isNonNegativeSafeInteger(value.connections) &&
     typeof difficulty === "number" &&
     Number.isFinite(difficulty) &&
     difficulty >= 0
+  );
+}
+
+export function isLegacyNodeInfo(value: unknown): value is LegacyNodeInfo {
+  if (!isRecord(value)) return false;
+  return (
+    isNonNegativeSafeInteger(value.blocks) &&
+    isNonNegativeSafeInteger(value.connections) &&
+    typeof value.difficulty === "number" &&
+    Number.isFinite(value.difficulty) &&
+    value.difficulty >= 0 &&
+    typeof value.testnet === "boolean"
   );
 }
 
