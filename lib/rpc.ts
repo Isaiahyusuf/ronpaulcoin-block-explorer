@@ -271,6 +271,13 @@ async function getBlockAtHeight(
   return { status: "online", data: block };
 }
 
+export async function getBlockHashAt(height: number): Promise<string | null> {
+  const response = await callRpc("getblockhash", [height]);
+  return response.status === "success" && typeof response.result === "string" && /^[a-fA-F0-9]{64}$/.test(response.result)
+    ? response.result
+    : null;
+}
+
 export async function getBlockchainInfo(): Promise<BlockchainInfoResult> {
   const [nodeResponse, hashResponse] = await Promise.all([
     callRpc("getinfo", []),
