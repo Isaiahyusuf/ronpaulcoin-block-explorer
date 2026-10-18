@@ -161,7 +161,7 @@ export default async function BlockPage({
               {details.transactions.slice(0, 50).map((txid, index) => (
                 <li key={`${txid}-${index}`}>
                   <span className="tx-index">{index + 1}</span>
-                  <Link className="mono-link" href={`/tx/${txid}`}>
+                  <Link className="mono-link" href={`/tx/${txid}?block=${details.hash}`}>
                     {txid}
                   </Link>
                 </li>

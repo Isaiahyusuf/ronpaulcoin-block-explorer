@@ -1,5 +1,6 @@
 import "server-only";
 
+import { parseBlockTransactions } from "@/lib/rawblock";
 import {
   type BlockDetails,
   type BlockSummary,
@@ -8,7 +9,11 @@ import {
   isBlockDetails,
   isBlockSummary,
   isLegacyNodeInfo,
+  parseTransaction,
+  type AddressResult,
   type BlockchainInfoResult,
+  type TransactionDetails,
+  type TransactionResult,
 } from "@/lib/blockchain";
 
 interface RpcConfig {
@@ -26,7 +31,11 @@ interface RecentBlocks {
 
 type RpcCallResult =
   | { status: "success"; result: unknown }
-  | { status: "not-configured" | "unavailable"; message: string };
+  | {
+      status: "not-configured" | "unavailable";
+      message: string;
+      errorCode?: number;
+    };
 
 function getRpcConfig():
   | { status: "configured"; config: RpcConfig }
@@ -186,6 +195,7 @@ async function callRpc(
     return {
       status: "unavailable",
       message: `The node rejected the ${method} request. Confirm that this RPC method is supported.`,
+      ...(errorCode !== null ? { errorCode } : {}),
     };
   }
 
@@ -395,3 +405,97 @@ export async function getBlockDetails(
 
   return { status: "online", data: details };
 }
+
+const METHOD_NOT_FOUND = -32601;
+
+// Tries the node's own lookup first. Without -txindex the daemon only finds
+// transactions that still have an unspent output (or are in the mempool), so a
+// fully spent transaction is reported as "not-indexed" unless the containing
+// block is known and can be scanned directly.
+export async function getTransaction(
+  txid: string,
+  blockHint?: string,
+): Promise<TransactionResult> {
+  if (!/^[a-fA-F0-9]{64}$/.test(txid)) {
+    return { status: "invalid", message: "A transaction ID is 64 hexadecimal characters." };
+  }
+
+  const direct = await callRpc("getrawtransaction", [txid.toLowerCase(), 1]);
+  if (direct.status === "success") {
+    const transaction = parseTransaction(direct.result);
+    if (!transaction || transaction.txid !== txid.toLowerCase()) {
+      return {
+        status: "unavailable",
+        message: "The node returned transaction data in an unexpected format.",
+      };
+    }
+    return { status: "found", source: "node", data: transaction };
+  }
+  if (direct.status !== "unavailable" || direct.errorCode !== -5) {
+    return { status: direct.status, message: direct.message };
+  }
+
+  if (blockHint && /^[a-fA-F0-9]{64}$/.test(blockHint)) {
+    const fromBlock = await getTransactionFromBlock(txid.toLowerCase(), blockHint);
+    if (fromBlock) return fromBlock;
+  }
+
+  return {
+    status: "not-indexed",
+    message:
+      "The node has no record of this transaction. Without a transaction index it can only look up transactions that still have unspent outputs, so this ID may be fully spent, or may not exist. Open the transaction from its block page to read it directly.",
+  };
+}
+
+async function getTransactionFromBlock(
+  txid: string,
+  blockHash: string,
+): Promise<TransactionResult | null> {
+  const block = await callRpc("getblock", [blockHash.toLowerCase(), false]);
+  if (block.status !== "success" || typeof block.result !== "string") return null;
+
+  let match;
+  try {
+    match = parseBlockTransactions(block.result).find((tx) => tx.txid === txid);
+  } catch {
+    return null;
+  }
+  if (!match) return null;
+
+  const decoded = await callRpc("decoderawtransaction", [match.hex]);
+  if (decoded.status !== "success") return null;
+  const transaction = parseTransaction(decoded.result);
+  if (!transaction || transaction.txid !== txid) return null;
+
+  const details = await getBlockDetails(blockHash);
+  if (details.status === "online") {
+    transaction.blockHash = details.data.hash;
+    transaction.confirmations = details.data.confirmations;
+    transaction.time = details.data.time;
+  }
+  return { status: "found", source: "block", data: transaction };
+}
+
+export async function lookupAddress(address: string): Promise<AddressResult> {
+  if (!/^[a-zA-Z0-9]{26,128}$/.test(address)) {
+    return { status: "invalid", message: "This is not a valid address format." };
+  }
+  const response = await callRpc("validateaddress", [address]);
+  if (response.status !== "success") {
+    if (response.status === "unavailable" && response.errorCode === METHOD_NOT_FOUND) {
+      return { status: "unavailable", message: "The node does not support address validation." };
+    }
+    return { status: response.status, message: response.message };
+  }
+  if (!isRecord(response.result) || typeof response.result.isvalid !== "boolean") {
+    return {
+      status: "unavailable",
+      message: "The node returned an unexpected response to address validation.",
+    };
+  }
+  return response.result.isvalid
+    ? { status: "valid-unindexed", address }
+    : { status: "invalid", message: "This address is not valid on the Ron Paul Coin network." };
+}
+
+export type { TransactionDetails };

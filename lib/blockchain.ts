@@ -140,3 +140,91 @@ export function isBlockchainInfoResult(
     typeof value.message === "string"
   );
 }
+
+export interface TransactionInput {
+  coinbase: string | null;
+  txid: string | null;
+  vout: number | null;
+}
+
+export interface TransactionOutput {
+  index: number;
+  value: number;
+  type: string | null;
+  addresses: string[];
+}
+
+export interface TransactionDetails {
+  txid: string;
+  version: number;
+  lockTime: number;
+  blockHash: string | null;
+  confirmations: number | null;
+  time: number | null;
+  inputs: TransactionInput[];
+  outputs: TransactionOutput[];
+}
+
+export type TransactionResult =
+  | { status: "found"; source: "node" | "block"; data: TransactionDetails }
+  | { status: "not-indexed" | "invalid"; message: string }
+  | { status: "not-configured" | "unavailable"; message: string };
+
+export type AddressResult =
+  | { status: "valid-unindexed"; address: string }
+  | { status: "invalid"; message: string }
+  | { status: "not-configured" | "unavailable"; message: string };
+
+export function parseTransaction(value: unknown): TransactionDetails | null {
+  if (!isRecord(value)) return null;
+  if (typeof value.txid !== "string" || !/^[a-fA-F0-9]{64}$/.test(value.txid)) return null;
+  if (!Array.isArray(value.vin) || !Array.isArray(value.vout)) return null;
+  if (!Number.isSafeInteger(value.version) || !Number.isSafeInteger(value.locktime)) return null;
+
+  const inputs: TransactionInput[] = [];
+  for (const input of value.vin) {
+    if (!isRecord(input)) return null;
+    if (typeof input.coinbase === "string") {
+      inputs.push({ coinbase: input.coinbase, txid: null, vout: null });
+    } else if (
+      typeof input.txid === "string" &&
+      /^[a-fA-F0-9]{64}$/.test(input.txid) &&
+      isNonNegativeSafeInteger(input.vout)
+    ) {
+      inputs.push({ coinbase: null, txid: input.txid, vout: input.vout });
+    } else {
+      return null;
+    }
+  }
+
+  const outputs: TransactionOutput[] = [];
+  for (const output of value.vout) {
+    if (!isRecord(output) || typeof output.value !== "number" || !Number.isFinite(output.value)) {
+      return null;
+    }
+    if (!isNonNegativeSafeInteger(output.n)) return null;
+    const script = isRecord(output.scriptPubKey) ? output.scriptPubKey : {};
+    outputs.push({
+      index: output.n,
+      value: output.value,
+      type: typeof script.type === "string" ? script.type : null,
+      addresses: Array.isArray(script.addresses)
+        ? script.addresses.filter((entry): entry is string => typeof entry === "string")
+        : [],
+    });
+  }
+
+  return {
+    txid: value.txid.toLowerCase(),
+    version: value.version as number,
+    lockTime: value.locktime as number,
+    blockHash:
+      typeof value.blockhash === "string" && /^[a-fA-F0-9]{64}$/.test(value.blockhash)
+        ? value.blockhash
+        : null,
+    confirmations: Number.isSafeInteger(value.confirmations) ? (value.confirmations as number) : null,
+    time: isNonNegativeSafeInteger(value.time) ? value.time : null,
+    inputs,
+    outputs,
+  };
+}
