@@ -75,3 +75,41 @@ export async function lookupIndexedAddress(address: string, page: number): Promi
     client.release();
   }
 }
+
+export type RecentTransaction = { txid: string; height: number; time: number; coinbase: boolean };
+export type RecentTransactionsResult =
+  | { status: "not-configured" }
+  | { status: "unavailable"; message: string }
+  | { status: "ok"; transactions: RecentTransaction[]; nextBefore: number | null };
+
+// Pages by whole blocks so a block's transactions are never split across pages.
+export async function getRecentTransactions(before?: number, blocks = 25): Promise<RecentTransactionsResult> {
+  const db = getPool();
+  if (!db) return { status: "not-configured" };
+  try {
+    const result = await db.query<{ txid: string; height: number; time: string; tx_index: number }>(
+      `SELECT t.txid, t.height, b.time::text AS time, t.tx_index
+         FROM transactions t JOIN blocks b ON b.height = t.height
+        WHERE t.height IN (SELECT height FROM blocks
+                            WHERE ($1::int IS NULL OR height < $1::int)
+                            ORDER BY height DESC LIMIT $2)
+        ORDER BY t.height DESC, t.tx_index ASC`,
+      [before ?? null, blocks],
+    );
+    const rows = result.rows;
+    const lowest = rows.length ? rows[rows.length - 1].height : null;
+    const next = await db.query(`SELECT 1 FROM blocks WHERE height < $1::int LIMIT 1`, [lowest ?? 0]);
+    return {
+      status: "ok",
+      transactions: rows.map((r) => ({
+        txid: r.txid,
+        height: r.height,
+        time: Number(r.time),
+        coinbase: r.tx_index === 0,
+      })),
+      nextBefore: lowest !== null && next.rows.length > 0 ? lowest : null,
+    };
+  } catch {
+    return { status: "unavailable", message: "The transaction index could not be queried." };
+  }
+}
