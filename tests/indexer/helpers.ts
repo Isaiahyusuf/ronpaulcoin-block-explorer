@@ -161,3 +161,24 @@ export function realChainSource(fixture: { hashes: string[]; blocks: string[] },
 }
 
 export const sha = (data: Buffer) => createHash("sha256").update(data).digest("hex");
+
+export const COIN = BigInt(100_000_000);
+
+export class Builder {
+  blocks: BuiltBlock[] = [];
+  add(txs: Buffer[], salt = 0): BuiltBlock {
+    const height = this.blocks.length;
+    const block = buildBlock(this.blocks.at(-1)?.hash ?? ZERO, txs, 1_400_000_000 + height * 60, salt);
+    this.blocks.push(block);
+    return block;
+  }
+  // A block whose only transaction is a unique coinbase paying `seed`.
+  coinbase(seed: number, value = BigInt(50) * COIN, salt = 0): BuiltBlock {
+    return this.add([buildTx(["coinbase"], [payTo(seed, value)], this.blocks.length * 1000 + salt)], salt);
+  }
+  fork(height: number): Builder {
+    const copy = new Builder();
+    copy.blocks = this.blocks.slice(0, height + 1);
+    return copy;
+  }
+}

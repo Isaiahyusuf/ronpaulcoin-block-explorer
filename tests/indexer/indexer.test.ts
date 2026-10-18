@@ -1,16 +1,16 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import real from "../fixtures/real-chain.json";
 import type { Db } from "../../indexer/db.ts";
-import { applyBlock, clearHalt, getIndexState, IndexerHaltError, syncOnce } from "../../indexer/indexer.ts";
+import { applyBlock, clearHalt, getIndexState, IndexerHaltError, syncOnce as syncOnceRaw } from "../../indexer/indexer.ts";
+import type { BlockSource } from "../../indexer/source.ts";
 import { parseBlock } from "../../indexer/parse.ts";
 import { classifyScript } from "../../indexer/script.ts";
 import { COINBASE_MATURITY, getAddressSummary, getIndexStats } from "../../indexer/queries.ts";
 import {
   addressOf, buildBlock, buildTx, createTestDb, dumpState, memorySource, p2pkh, keyHash, payTo,
-  realChainSource, resetDb, ZERO, type BuiltBlock,
+  Builder, COIN, realChainSource, resetDb, ZERO,
 } from "./helpers.ts";
 
-const COIN = BigInt(100_000_000);
 let db: Db;
 
 beforeAll(async () => {
@@ -23,27 +23,15 @@ beforeEach(async () => {
   await resetDb(db);
 });
 
-class Builder {
-  blocks: BuiltBlock[] = [];
-  add(txs: Buffer[], salt = 0): BuiltBlock {
-    const height = this.blocks.length;
-    const block = buildBlock(this.blocks.at(-1)?.hash ?? ZERO, txs, 1_400_000_000 + height * 60, salt);
-    this.blocks.push(block);
-    return block;
-  }
-  // A block whose only transaction is a unique coinbase paying `seed`.
-  coinbase(seed: number, value = BigInt(50) * COIN, salt = 0): BuiltBlock {
-    return this.add([buildTx(["coinbase"], [payTo(seed, value)], this.blocks.length * 1000 + salt)], salt);
-  }
-  fork(height: number): Builder {
-    const copy = new Builder();
-    copy.blocks = this.blocks.slice(0, height + 1);
-    return copy;
-  }
-}
-
+// Remembers the node the index last synced from, so summaries can confirm its tip hash.
+let lastNode: BlockSource | null = null;
+const syncOnce = (target: Db, source: BlockSource, options = {}) => {
+  lastNode = source;
+  return syncOnceRaw(target, source, options);
+};
 const sync = (b: Builder, options = {}) => syncOnce(db, memorySource(() => b), options);
-const summary = (address: string, nodeHeight: number) => getAddressSummary(db, address, { nodeHeight });
+const summary = (address: string, nodeHeight: number) =>
+  getAddressSummary(db, address, { nodeHeight, nodeBlockHash: (h) => lastNode!.getBlockHash(h) });
 
 async function freshDump(b: Builder): Promise<string> {
   await resetDb(db);

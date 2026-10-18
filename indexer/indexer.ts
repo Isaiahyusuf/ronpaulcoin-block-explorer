@@ -5,6 +5,15 @@ import type { BlockSource } from "./source.ts";
 
 const ZERO_HASH = "0".repeat(64);
 const UNIQUE_VIOLATION = "23505";
+// Only this index means "a txid was reused while an earlier copy is unspent".
+export const OUTPOINT_CONSTRAINT = "outputs_unspent_outpoint";
+// Arbitrary constant identifying the indexer's database-wide write lock.
+export const INDEXER_LOCK_KEY = 726_850_321;
+
+export function isOutpointViolation(error: unknown): boolean {
+  const e = error as { code?: string; constraint?: string } | null;
+  return e?.code === UNIQUE_VIOLATION && e.constraint === OUTPOINT_CONSTRAINT;
+}
 
 // Data-integrity failures. They stop the scan and are recorded in
 // indexer_state so no balance is reported as complete until an operator
@@ -29,12 +38,20 @@ export interface SyncOptions {
   onProgress?: (indexedHeight: number) => void;
 }
 
-export interface SyncResult {
+export interface SyncedResult {
+  status: "synced";
   indexedHeight: number;
   tipHeight: number;
   blocksProcessed: number;
   rolledBackBlocks: number;
 }
+
+// Another worker holds the write lock; nothing was read or written, and no halt was recorded.
+export interface AlreadyRunningResult {
+  status: "indexer-already-running";
+}
+
+export type SyncResult = SyncedResult | AlreadyRunningResult;
 
 export interface IndexState {
   status: "ok" | "halted";
@@ -96,10 +113,24 @@ export async function applyBlock(
   hash: string,
   block: ParsedBlock,
 ): Promise<void> {
-  await tx.query(
-    "INSERT INTO blocks (height, hash, prev_hash, time, tx_count) VALUES ($1, $2, $3, $4, $5)",
-    [height, hash, block.prevHash, String(block.time), block.transactions.length],
+  // One statement checks the position and inserts: nothing may exist at this
+  // height or above (so no gap fill or below-tip insert), and the parent must be
+  // the stored block directly below. Genesis is the only block allowed an
+  // all-zero parent. Reorgs roll back first, so replacements still pass.
+  const inserted = await tx.query(
+    `INSERT INTO blocks (height, hash, prev_hash, time, tx_count)
+     SELECT $1::int, $2::text, $3::text, $4::bigint, $5::int
+      WHERE NOT EXISTS (SELECT 1 FROM blocks t WHERE t.height >= $1::int)
+        AND (($1::int = 0 AND $3::text = $6::text)
+          OR EXISTS (SELECT 1 FROM blocks p WHERE p.height = $1::int - 1 AND p.hash = $3::text))`,
+    [height, hash, block.prevHash, String(block.time), block.transactions.length, ZERO_HASH],
   );
+  if (inserted.rowCount === 0) {
+    throw new IndexerHaltError(
+      "non-contiguous-block",
+      `Block ${height} (${hash}) does not extend the indexed block at height ${height - 1} (parent ${block.prevHash}).`,
+    );
+  }
 
   const txIndexes: number[] = [];
   const txids: string[] = [];
@@ -215,7 +246,7 @@ async function indexBatch(
       try {
         await applyBlock(tx, height, hash, block);
       } catch (error) {
-        if ((error as { code?: string }).code === UNIQUE_VIOLATION) {
+        if (isOutpointViolation(error)) {
           throw new IndexerHaltError(
             "duplicate-unspent-output",
             `Block ${height} (${hash}) creates a transaction ID that still has unspent outputs.`,
@@ -252,6 +283,19 @@ async function findForkPoint(
   return -1;
 }
 
+// Never roll back against a node that is on a different chain: with no common
+// genesis there is no fork point, and "rolling back" would erase the whole index.
+async function assertSameGenesis(db: Queryable, source: BlockSource): Promise<void> {
+  const stored = await storedHash(db, 0);
+  const node = await source.getBlockHash(0);
+  if (stored !== node) {
+    throw new IndexerHaltError(
+      "genesis-mismatch",
+      `The node's genesis block (${node}) differs from the indexed genesis (${stored ?? "missing"}). The index was left untouched.`,
+    );
+  }
+}
+
 async function recordHalt(db: Db, error: IndexerHaltError): Promise<void> {
   await db.query("UPDATE indexer_state SET status = 'halted', halted_reason = $1 WHERE id = 1", [
     `${error.reason}: ${error.message}`,
@@ -263,6 +307,13 @@ export async function syncOnce(
   source: BlockSource,
   options: SyncOptions = {},
 ): Promise<SyncResult> {
+  // The lock is taken before any read of indexer state, so state checks, fork
+  // detection, rollback and block writes are all covered by one lock holder.
+  const locked = await db.withExclusiveLock(INDEXER_LOCK_KEY, (lockedDb) => syncLocked(lockedDb, source, options));
+  return locked.acquired ? locked.value : { status: "indexer-already-running" };
+}
+
+async function syncLocked(db: Db, source: BlockSource, options: SyncOptions): Promise<SyncedResult> {
   const batchSize = options.batchSize ?? 100;
   const maxDepth = options.maxReorgDepth ?? 1000;
   let processed = 0;
@@ -281,7 +332,11 @@ export async function syncOnce(
       let indexed = state.indexedHeight ?? -1;
 
       if (indexed >= 0) {
+        await assertSameGenesis(db, source);
         const fork = await findForkPoint(db, source, indexed, tip.height, maxDepth);
+        if (fork < 0) {
+          throw new IndexerHaltError("no-common-block", "No block of the index matches the node; refusing to erase it.");
+        }
         if (fork < indexed) {
           rolledBack += await db.transaction((tx) => rollbackTo(tx, fork));
           indexed = fork;
@@ -298,7 +353,13 @@ export async function syncOnce(
         indexed = to;
         options.onProgress?.(indexed);
       }
-      return { indexedHeight: indexed, tipHeight: tip.height, blocksProcessed: processed, rolledBackBlocks: rolledBack };
+      return {
+        status: "synced",
+        indexedHeight: indexed,
+        tipHeight: tip.height,
+        blocksProcessed: processed,
+        rolledBackBlocks: rolledBack,
+      };
     } catch (error) {
       if (error instanceof ChainChangedError && retries < 5) {
         retries += 1;

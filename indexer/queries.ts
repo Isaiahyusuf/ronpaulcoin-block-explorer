@@ -15,8 +15,9 @@ export interface AddressTransaction {
 
 export interface AddressSummary {
   address: string;
-  // True only when the index is healthy and within `maxLag` blocks of the node.
-  // Balances and history must not be presented as authoritative otherwise.
+  // True only when the index is healthy, within `maxLag` blocks of the node, and
+  // its newest block is still on the node's chain. When false, the balance and
+  // history fields must not be presented as current.
   complete: boolean;
   incompleteReason: string | null;
   indexedHeight: number | null;
@@ -32,6 +33,9 @@ export interface AddressSummary {
 
 export interface AddressQueryOptions {
   nodeHeight: number;
+  // The node's current hash at a height. Required so completeness is never judged
+  // from heights alone: a same-height reorg leaves the stored hash stale.
+  nodeBlockHash: (height: number) => Promise<string>;
   maxLag?: number;
   limit?: number;
   offset?: number;
@@ -51,8 +55,19 @@ export async function getAddressSummary(
   let incompleteReason: string | null = null;
   if (state.status === "halted") incompleteReason = `The indexer is halted: ${state.haltedReason}`;
   else if (indexedHeight === null) incompleteReason = "Nothing has been indexed yet.";
-  else if (indexedHeight < options.nodeHeight - maxLag) {
+  else if (indexedHeight > options.nodeHeight) {
+    incompleteReason = `The index is at height ${indexedHeight}, ahead of the node at ${options.nodeHeight}.`;
+  } else if (indexedHeight < options.nodeHeight - maxLag) {
     incompleteReason = `The index is at height ${indexedHeight} but the node is at ${options.nodeHeight}.`;
+  } else {
+    try {
+      const nodeHash = await options.nodeBlockHash(indexedHeight);
+      if (nodeHash !== state.indexedHash) {
+        incompleteReason = `The index's block at height ${indexedHeight} is no longer on the node's chain (stale after a reorganisation).`;
+      }
+    } catch {
+      incompleteReason = "The node's block hash could not be checked, so the index cannot be confirmed current.";
+    }
   }
 
   const tip = indexedHeight ?? -1;

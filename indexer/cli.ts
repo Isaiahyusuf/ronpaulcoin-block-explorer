@@ -16,7 +16,10 @@ function required(name: string): string {
 
 async function main() {
   const { Pool } = await import("pg");
-  const db = pgDb(new Pool({ connectionString: required("DATABASE_URL"), max: 2 }) as never);
+  const pool = new Pool({ connectionString: required("DATABASE_URL"), max: 2 });
+  // Idle connections can be dropped by the server; that must not crash the worker.
+  pool.on("error", (error) => console.error(`database connection error: ${error.message}`));
+  const db = pgDb(pool as never);
   const source = createRpcSource({
     url: required("RPC_URL"),
     username: process.env.RPC_USERNAME,
@@ -44,9 +47,14 @@ async function main() {
           if (height % 1000 === 0) console.log(`indexed height ${height}`);
         },
       });
-      console.log(
-        `synced to ${result.indexedHeight}/${result.tipHeight} (+${result.blocksProcessed}, rolled back ${result.rolledBackBlocks})`,
-      );
+      if (result.status === "indexer-already-running") {
+        // Another worker owns the write lock; stay on standby and retry.
+        console.log("indexer-already-running: another worker holds the lock.");
+      } else {
+        console.log(
+          `synced to ${result.indexedHeight}/${result.tipHeight} (+${result.blocksProcessed}, rolled back ${result.rolledBackBlocks})`,
+        );
+      }
     } catch (error) {
       if (error instanceof IndexerHaltError) {
         const state = await getIndexState(db);
