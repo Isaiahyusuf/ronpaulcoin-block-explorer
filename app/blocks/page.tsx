@@ -3,17 +3,10 @@ import Link from "next/link";
 import { connection } from "next/server";
 import { UnavailableState } from "@/components/unavailable-state";
 import { getRecentBlocks } from "@/lib/rpc";
+import { formatBlockTime } from "@/lib/format";
 
 export const metadata: Metadata = { title: "Blocks" };
 export const instant = false;
-
-function formatBlockTime(seconds: number): string {
-  return `${new Date(seconds * 1000).toLocaleString("en-US", {
-    dateStyle: "medium",
-    timeStyle: "short",
-    timeZone: "UTC",
-  })} UTC`;
-}
 
 export default async function BlocksPage({
   searchParams,

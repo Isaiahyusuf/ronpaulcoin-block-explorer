@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import real from "../fixtures/real-chain.json";
 import type { Db } from "../../indexer/db.ts";
-import { applyBlock, clearHalt, getIndexState, IndexerHaltError, syncOnce as syncOnceRaw } from "../../indexer/indexer.ts";
+import { applyBlock, clearHalt, getIndexState, syncOnce as syncOnceRaw } from "../../indexer/indexer.ts";
 import type { BlockSource } from "../../indexer/source.ts";
 import { parseBlock } from "../../indexer/parse.ts";
 import { classifyScript } from "../../indexer/script.ts";

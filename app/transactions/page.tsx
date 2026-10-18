@@ -3,17 +3,10 @@ import Link from "next/link";
 import { connection } from "next/server";
 import { UnavailableState } from "@/components/unavailable-state";
 import { getRecentTransactions } from "@/lib/address-index";
+import { formatBlockTime } from "@/lib/format";
 
 export const metadata: Metadata = { title: "Transactions" };
 export const instant = false;
-
-function formatTime(seconds: number): string {
-  return `${new Date(seconds * 1000).toLocaleString("en-US", {
-    dateStyle: "medium",
-    timeStyle: "short",
-    timeZone: "UTC",
-  })} UTC`;
-}
 
 export default async function TransactionsPage({
   searchParams,
@@ -57,7 +50,7 @@ export default async function TransactionsPage({
                         {tx.height.toLocaleString("en-US")}
                       </Link>
                     </td>
-                    <td>{formatTime(tx.time)}</td>
+                    <td>{formatBlockTime(tx.time)}</td>
                     <td>{tx.coinbase ? "Coinbase" : "Transfer"}</td>
                   </tr>
                 ))}
