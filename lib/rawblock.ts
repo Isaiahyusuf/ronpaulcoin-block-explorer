@@ -5,15 +5,24 @@ export interface RawBlockTransaction {
   hex: string;
 }
 
-function sha256d(data: Buffer): Buffer {
+export function sha256d(data: Buffer): Buffer {
   return createHash("sha256")
     .update(createHash("sha256").update(data).digest())
     .digest();
 }
 
-class Reader {
+export class Reader {
   offset = 0;
-  constructor(readonly bytes: Buffer) {}
+  readonly bytes: Buffer;
+  constructor(bytes: Buffer) {
+    this.bytes = bytes;
+  }
+
+  read(length: number): Buffer {
+    const start = this.offset;
+    this.skip(length);
+    return this.bytes.subarray(start, start + length);
+  }
 
   skip(length: number): void {
     if (length < 0 || this.offset + length > this.bytes.length) {

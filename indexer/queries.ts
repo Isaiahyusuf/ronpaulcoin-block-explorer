@@ -1,0 +1,134 @@
+import type { Queryable } from "./db.ts";
+import { getIndexState } from "./indexer.ts";
+
+// Matches the daemon: a coinbase output may be spent once the next block's
+// height minus its own height is at least 100, i.e. 100 confirmations.
+export const COINBASE_MATURITY = 100;
+
+export interface AddressTransaction {
+  txid: string;
+  height: number;
+  time: number;
+  // Net change to this address's balance in satoshis (negative when it spent more than it received).
+  delta: bigint;
+}
+
+export interface AddressSummary {
+  address: string;
+  // True only when the index is healthy and within `maxLag` blocks of the node.
+  // Balances and history must not be presented as authoritative otherwise.
+  complete: boolean;
+  incompleteReason: string | null;
+  indexedHeight: number | null;
+  nodeHeight: number;
+  spendable: bigint;
+  immature: bigint;
+  total: bigint;
+  totalReceived: bigint;
+  transactionCount: number;
+  transactions: AddressTransaction[];
+  caveats: string[];
+}
+
+export interface AddressQueryOptions {
+  nodeHeight: number;
+  maxLag?: number;
+  limit?: number;
+  offset?: number;
+}
+
+export async function getAddressSummary(
+  db: Queryable,
+  address: string,
+  options: AddressQueryOptions,
+): Promise<AddressSummary> {
+  const maxLag = options.maxLag ?? 2;
+  const limit = options.limit ?? 50;
+  const offset = options.offset ?? 0;
+  const state = await getIndexState(db);
+  const indexedHeight = state.indexedHeight;
+
+  let incompleteReason: string | null = null;
+  if (state.status === "halted") incompleteReason = `The indexer is halted: ${state.haltedReason}`;
+  else if (indexedHeight === null) incompleteReason = "Nothing has been indexed yet.";
+  else if (indexedHeight < options.nodeHeight - maxLag) {
+    incompleteReason = `The index is at height ${indexedHeight} but the node is at ${options.nodeHeight}.`;
+  }
+
+  const tip = indexedHeight ?? -1;
+  const balance = await db.query<{ spendable: string; immature: string; received: string }>(
+    `SELECT
+       COALESCE(SUM(value) FILTER (WHERE spent_height IS NULL AND spendable
+                                    AND (NOT is_coinbase OR $2 - height + 1 >= $3)), 0)::text AS spendable,
+       COALESCE(SUM(value) FILTER (WHERE spent_height IS NULL AND spendable
+                                    AND is_coinbase AND $2 - height + 1 < $3), 0)::text AS immature,
+       COALESCE(SUM(value) FILTER (WHERE spendable), 0)::text AS received
+     FROM outputs WHERE address = $1`,
+    [address, tip, COINBASE_MATURITY],
+  );
+
+  const events = `
+    SELECT height, tx_index, txid, value AS delta FROM outputs WHERE address = $1 AND spendable
+    UNION ALL
+    SELECT spent_height, spent_tx_index, spent_txid, -value FROM outputs
+     WHERE address = $1 AND spent_height IS NOT NULL`;
+  const count = await db.query<{ count: string }>(
+    `SELECT COUNT(*)::text AS count FROM (SELECT DISTINCT height, tx_index FROM (${events}) e) d`,
+    [address],
+  );
+  const history = await db.query<{ txid: string; height: number; time: string; delta: string }>(
+    `SELECT e.txid, e.height, b.time::text AS time, SUM(e.delta)::text AS delta
+       FROM (${events}) e JOIN blocks b ON b.height = e.height
+      GROUP BY e.txid, e.height, e.tx_index, b.time
+      ORDER BY e.height DESC, e.tx_index DESC
+      LIMIT $2 OFFSET $3`,
+    [address, limit, offset],
+  );
+
+  const caveats: string[] = [];
+  const multisig = await db.query("SELECT 1 FROM outputs WHERE script_type = 'multisig' LIMIT 1");
+  if (multisig.rows.length > 0) {
+    caveats.push("Multisig outputs exist in the index and are not attributed to individual addresses.");
+  }
+
+  const row = balance.rows[0];
+  const spendable = BigInt(row.spendable);
+  const immature = BigInt(row.immature);
+  return {
+    address,
+    complete: incompleteReason === null,
+    incompleteReason,
+    indexedHeight,
+    nodeHeight: options.nodeHeight,
+    spendable,
+    immature,
+    total: spendable + immature,
+    totalReceived: BigInt(row.received),
+    transactionCount: Number(count.rows[0].count),
+    transactions: history.rows.map((r) => ({
+      txid: r.txid,
+      height: r.height,
+      time: Number(r.time),
+      delta: BigInt(r.delta),
+    })),
+    caveats,
+  };
+}
+
+export interface IndexStats {
+  outputsByType: Record<string, { count: number; value: bigint }>;
+}
+
+// Makes unattributable value visible: outputs without an address are stored
+// but belong to no address balance.
+export async function getIndexStats(db: Queryable): Promise<IndexStats> {
+  const result = await db.query<{ script_type: string; count: string; value: string }>(
+    `SELECT script_type, COUNT(*)::text AS count, COALESCE(SUM(value), 0)::text AS value
+       FROM outputs GROUP BY script_type`,
+  );
+  const outputsByType: IndexStats["outputsByType"] = {};
+  for (const row of result.rows) {
+    outputsByType[row.script_type] = { count: Number(row.count), value: BigInt(row.value) };
+  }
+  return { outputsByType };
+}
