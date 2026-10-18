@@ -14,7 +14,7 @@ function mockRpc(respond: (method: string, params: unknown[]) => Reply) {
     const reply = respond(method, params);
     return new Response(
       JSON.stringify({ result: reply.result ?? null, error: reply.error ?? null, id: "x" }),
-      { status: 200, headers: { "content-type": "application/json" } },
+      { status: reply.error ? 500 : 200, headers: { "content-type": "application/json" } },
     );
   });
   vi.stubGlobal("fetch", fetchMock);

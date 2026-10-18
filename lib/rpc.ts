@@ -151,17 +151,25 @@ async function callRpc(
     };
   }
 
-  if (!response.ok) {
+  let payload: unknown;
+  try {
+    payload = await response.json();
+  } catch {
+    payload = undefined;
+  }
+
+  // The legacy daemon reports RPC-level errors (e.g. -5, -32601) as HTTP
+  // 400/404/500 with a JSON-RPC error body, so only treat the status as fatal
+  // when no such body is present.
+  const hasRpcError =
+    isRecord(payload) && isRecord(payload.error) && "result" in payload;
+  if (!response.ok && !hasRpcError) {
     return {
       status: "unavailable",
       message: `The node returned HTTP ${response.status} to the ${method} request.`,
     };
   }
-
-  let payload: unknown;
-  try {
-    payload = await response.json();
-  } catch {
+  if (payload === undefined) {
     return {
       status: "unavailable",
       message: "The node returned an unreadable JSON-RPC response.",
