@@ -45,6 +45,8 @@ export async function lookupIndexedAddress(address: string, page: number): Promi
   try {
     // One read-only snapshot so balance and history come from the same height.
     await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
+    // Parallel aggregation over the busiest address is pathologically slow; serial is fast.
+    await client.query("SET LOCAL max_parallel_workers_per_gather = 0");
     const summary = await getAddressSummary(
       {
         async query<T>(sql: string, params?: unknown[]) {

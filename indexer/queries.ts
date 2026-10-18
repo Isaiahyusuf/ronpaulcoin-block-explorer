@@ -82,21 +82,26 @@ export async function getAddressSummary(
     [address, tip, COINBASE_MATURITY],
   );
 
+  // Events carry no txid so the scan stays index-only; the txid is looked up for
+  // the returned page only. (height, tx_index) identifies a transaction uniquely.
   const events = `
-    SELECT height, tx_index, txid, value AS delta FROM outputs WHERE address = $1 AND spendable
+    SELECT height, tx_index, value AS delta FROM outputs WHERE address = $1 AND spendable
     UNION ALL
-    SELECT spent_height, spent_tx_index, spent_txid, -value FROM outputs
+    SELECT spent_height, spent_tx_index, -value FROM outputs
      WHERE address = $1 AND spent_height IS NOT NULL`;
   const count = await db.query<{ count: string }>(
     `SELECT COUNT(*)::text AS count FROM (SELECT DISTINCT height, tx_index FROM (${events}) e) d`,
     [address],
   );
   const history = await db.query<{ txid: string; height: number; time: string; delta: string }>(
-    `SELECT e.txid, e.height, b.time::text AS time, SUM(e.delta)::text AS delta
-       FROM (${events}) e JOIN blocks b ON b.height = e.height
-      GROUP BY e.txid, e.height, e.tx_index, b.time
-      ORDER BY e.height DESC, e.tx_index DESC
-      LIMIT $2 OFFSET $3`,
+    `SELECT t.txid, g.height, b.time::text AS time, g.delta::text AS delta
+       FROM (SELECT height, tx_index, SUM(delta) AS delta FROM (${events}) e
+              GROUP BY height, tx_index
+              ORDER BY height DESC, tx_index DESC
+              LIMIT $2 OFFSET $3) g
+       JOIN transactions t ON t.height = g.height AND t.tx_index = g.tx_index
+       JOIN blocks b ON b.height = g.height
+      ORDER BY g.height DESC, g.tx_index DESC`,
     [address, limit, offset],
   );
 

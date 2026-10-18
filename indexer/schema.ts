@@ -45,9 +45,15 @@ CREATE TABLE IF NOT EXISTS outputs (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS outputs_unspent_outpoint
   ON outputs (txid, vout) WHERE spent_height IS NULL;
-CREATE INDEX IF NOT EXISTS outputs_address ON outputs (address, height) WHERE address IS NOT NULL;
-CREATE INDEX IF NOT EXISTS outputs_spent_address
-  ON outputs (address, spent_height) WHERE address IS NOT NULL AND spent_height IS NOT NULL;
+-- Covering indexes: an address balance and history are answered from the index
+-- alone (index-only scans), without reading the large outputs heap.
+CREATE INDEX IF NOT EXISTS outputs_address_cover
+  ON outputs (address, height) INCLUDE (tx_index, value, is_coinbase, spendable, spent_height)
+  WHERE address IS NOT NULL;
+CREATE INDEX IF NOT EXISTS outputs_spent_address_cover
+  ON outputs (address, spent_height) INCLUDE (spent_tx_index, value)
+  WHERE address IS NOT NULL AND spent_height IS NOT NULL;
+CREATE INDEX IF NOT EXISTS outputs_multisig ON outputs (script_type) WHERE script_type = 'multisig';
 CREATE INDEX IF NOT EXISTS outputs_spent_height ON outputs (spent_height) WHERE spent_height IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS indexer_state (
